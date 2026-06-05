@@ -205,7 +205,7 @@ class BloodPulseController:
             strength = self._clamp(self.max_strength)
             wave_data, repeat = build_wave(self.death_wave_name, self._cfg)
             wave_ms = len(wave_data) * repeat * 100
-            print(f"\n  💀 死亡! HP=0/{max_hp} → 强度={strength}, {self.death_wave_name}({wave_ms}ms), {self.respawn_seconds:.0f}s内禁用")
+            print(f"\n  [DEATH] HP=0/{max_hp} -> 强度={strength}, {self.death_wave_name}({wave_ms}ms), {self.respawn_seconds:.0f}s内禁用")
             await self._stop_pulse()
             await self._clear_queue()
             await self.dg.set_strength(self.channel, StrengthOperationType.SET_TO, strength)
@@ -220,7 +220,7 @@ class BloodPulseController:
             is_low = ratio < self.low_hp_ratio
             wave_name = self.low_hp_wave_name if is_low else self.damage_wave_name
             wave_data, repeat = build_wave(wave_name, self._cfg)
-            print(f"\n  ⚔️ 掉血! HP={current}/{max_hp} ({ratio:.0%}) → 强度={strength}, {wave_name}")
+            print(f"\n  [DAMAGE] HP={current}/{max_hp} ({ratio:.0%}) -> 强度={strength}, {wave_name}")
             await self._stop_pulse()
             await self._clear_queue()
             await self.dg.set_strength(self.channel, StrengthOperationType.SET_TO, strength)
@@ -230,7 +230,7 @@ class BloodPulseController:
             # 仅死亡模式下跳过回血处理 / Skip heal handling in death-only mode
             if self.death_only:
                 return
-            print(f"\n  💚 回血 HP={current}/{max_hp} → 停止波形")
+            print(f"\n  [HEAL] HP={current}/{max_hp} -> 停止波形")
             await self._stop_pulse()
             await self._clear_queue()
 
@@ -238,7 +238,7 @@ class BloodPulseController:
             # 仅死亡模式下跳过满血处理 / Skip full-HP handling in death-only mode
             if self.death_only:
                 return
-            print(f"\n  ✅ 满血 HP={current}/{max_hp} → 清空波形, 强度归零")
+            print(f"\n  [FULL] HP={current}/{max_hp} -> 清空波形, 强度归零")
             await self._stop_pulse()
             await self._clear_queue()
             try:
@@ -360,7 +360,7 @@ async def main():
     ws_port = cfg.get("ws_port", 5678)
 
     print("=" * 60)
-    print("  🎮 守望先锋掉血 & 死亡 → 郊狼波形控制")
+    print("  守望先锋掉血 & 死亡 -> 郊狼波形控制")
     print("=" * 60)
 
     if ws_url.startswith("ws://"):
@@ -377,7 +377,7 @@ async def main():
 
         # 生成二维码 // Generate QR code
         qr_url = client.get_qrcode(f"ws://{ws_host}:{ws_port}")
-        print("\n  📱 请用 DG-LAB APP 扫描二维码绑定郊狼:")
+        print("\n  请用 DG-LAB APP 扫描二维码绑定郊狼:")
         qr = qrcode.QRCode()
         qr.add_data(qr_url)
         f = io.StringIO()
@@ -389,7 +389,7 @@ async def main():
         # 等待绑定 // Wait for binding
         print("  等待 APP 扫码绑定...")
         await client.bind()
-        print(f"  ✅ 绑定成功! targetId={client.target_id}\n")
+        print(f"  [OK] 绑定成功! targetId={client.target_id}\n")
 
         # ── 2. 初始化 OCR / Init OCR ────────────────────────
         from rapidocr_openvino import create_rapidocr_with_openvino
@@ -415,7 +415,7 @@ async def main():
         )
         print("  [OCR] OpenVINO FP32 CPU, limit_side_len=64, cls=OFF")
         print(f"  [DG-LAB] 通道={cfg.get('channel', 'A')}, 强度上限={controller.max_strength}")
-        mode_str = "💀仅死亡" if controller.death_only else "⚔️全部"
+        mode_str = "仅死亡" if controller.death_only else "全部"
         print(f"  [模式] {mode_str} | 波形: 掉血={controller.damage_wave_name}, 低血={controller.low_hp_wave_name}, 死亡={controller.death_wave_name}")
 
         # ── 3. 启动接收 + OCR + 控制循环 / Start recv + OCR + control loop ──
@@ -436,9 +436,9 @@ async def main():
                     if isinstance(data, StrengthData):
                         pass
                     elif data == RetCode.CLIENT_DISCONNECTED:
-                        print("\n  ⚠️ APP 断开! 等待重连...")
+                        print("\n  [WARN] APP 断开! 等待重连...")
                         await client.rebind()
-                        print("  ✅ 重连成功")
+                        print("  [OK] 重连成功")
 
             monitor_task = asyncio.create_task(dg_monitor())
 
@@ -489,9 +489,9 @@ async def main():
                 await controller._stop_pulse()
                 await client.clear_pulses(controller.channel)
                 await client.set_strength(controller.channel, StrengthOperationType.SET_TO, controller._clamp(0))
-                print("\n\n  ✅ 安全关闭: 波形清空, 强度归零")
+                print("\n\n  [OK] 安全关闭: 波形清空, 强度归零")
             except Exception:
-                print("\n\n  ⚠️ 关闭时清空失败，请手动检查设备")
+                print("\n\n  [WARN] 关闭时清空失败，请手动检查设备")
 
 
 if __name__ == "__main__":

@@ -346,7 +346,7 @@ if __name__ == "__main__":
     ]
     for text, exp_cur, exp_max in frames:
         result = parser.parse([text])
-        ok = "✅" if (result.current == exp_cur and result.max_hp == exp_max) else "❌"
+        ok = "OK" if (result.current == exp_cur and result.max_hp == exp_max) else "FAIL"
         print(f"  {ok} input={text!r:15s} → {result}  (期望 {exp_cur}/{exp_max})")
 
     # 模拟连续误读：max=350，连续 20 帧都把 350 读成各种乱七八糟的

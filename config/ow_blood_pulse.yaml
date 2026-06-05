@@ -6,8 +6,8 @@
 # ── 安全限制 / Safety limits ──────────────────────────────────────────────────
 # set_strength 绝对上限, 设备范围 0~200, 此值不可超过
 # Absolute upper limit for set_strength, device range 0~200, this value must not exceed
-# ⚠️ 安全值, 修改前请确认设备可承受
-# ⚠️ Safety value, please confirm the device can handle it before modifying
+# 安全值, 修改前请确认设备可承受
+# Safety value, please confirm the device can handle it before modifying
 max_strength: 30
 
 # ── DG-LAB 连接 / DG-LAB connection ──────────────────────────────────────────
