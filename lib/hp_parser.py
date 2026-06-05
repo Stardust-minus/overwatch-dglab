@@ -64,13 +64,16 @@ class HPParser:
         result = parser.parse("3071350")   # → HP(307/350) (max 锁定 / max locked)
     """
 
-    def __init__(self, confirm_frames: int = 10, max_jump_ratio: float = 0.3):
+    def __init__(self, confirm_frames: int = 10, max_jump_ratio: float = 0.3,
+                 min_max_hp: int = 100):
         """
         Args:
             confirm_frames: max_hp 新值需连续多少帧一致才确认变更
                 Number of consecutive frames a new max_hp must be consistent before confirmed
             max_jump_ratio: current 允许的最大单帧跳变比例 (相对于 max_hp)
                 Maximum allowed single-frame jump ratio for current (relative to max_hp)
+            min_max_hp: max_hp 有效下限, 低于此值视为误读 (守望先锋没有低于三位数血量的英雄)
+                Minimum valid max_hp, below this is treated as misread (Overwatch has no hero with <100 HP)
         """
         # 锁定的 max（置信度高、已被确认的值）
         # Locked max (high-confidence, confirmed value)
@@ -85,6 +88,7 @@ class HPParser:
         # Current history (recent frames, used for smoothing)
         self.prev_current: Optional[int] = None
         self.max_jump_ratio = max_jump_ratio
+        self.min_max_hp = min_max_hp
 
     def parse(self, ocr_texts: list[str]) -> HPResult:
         """
@@ -100,6 +104,11 @@ class HPParser:
             return self._fallback(raw)
 
         result = self._parse_raw(raw)
+
+        # max_hp 低于有效下限 → 视为误读, 丢弃本帧
+        # max_hp below minimum → treat as misread, discard this frame
+        if result.valid and result.max_hp < self.min_max_hp:
+            return self._fallback(raw)
 
         # 用锁定 max 修正
         # Apply locked max correction
@@ -127,6 +136,20 @@ class HPParser:
                            raw=raw, confidence="low")
         return HPResult(raw=raw, confidence="low")
 
+    def _strip_false_one(self, value: int) -> int:
+        """去除四位数首位的误读 1。Strip false leading 1 from 4-digit number.
+
+        守望先锋没有四位数血量的英雄，OCR 误在三位数前插入 1 时：
+        1307 -> 307, 1350 -> 350
+        Overwatch has no hero with 4-digit HP; when OCR inserts a false leading 1:
+        """
+        if 1000 <= value <= 1999:
+            stripped = value - 1000
+            # 去掉 1 后必须仍是有效正数 / Must still be a valid positive number
+            if stripped > 0:
+                return stripped
+        return value
+
     def _parse_raw(self, raw: str) -> HPResult:
         """从原始字符串解析 current/max。Parse current/max from raw string."""
         import re
@@ -140,6 +163,8 @@ class HPParser:
         if len(parts) == 2:
             try:
                 a, b = int(parts[0]), int(parts[1])
+                # 去除误读的前导 1 / Strip false leading 1
+                a, b = self._strip_false_one(a), self._strip_false_one(b)
                 if a <= b:
                     return HPResult(current=a, max_hp=b, raw=raw, confidence="high")
                 return HPResult(raw=raw, confidence="low")
@@ -151,7 +176,7 @@ class HPParser:
             for p in parts:
                 p = p.strip()
                 if p.isdigit():
-                    nums.append(int(p))
+                    nums.append(self._strip_false_one(int(p)))
                 if len(nums) == 2:
                     break
             if len(nums) == 2 and nums[0] <= nums[1]:
@@ -177,7 +202,7 @@ class HPParser:
             idx = digits.rfind(max_str)
             if idx > 0:
                 try:
-                    current = int(digits[:idx])
+                    current = self._strip_false_one(int(digits[:idx]))
                     if current <= locked:
                         return HPResult(current=current, max_hp=locked,
                                        raw=raw, confidence="medium")
@@ -194,7 +219,7 @@ class HPParser:
                 idx = digits.rfind(adj_str)
                 if idx > 0:
                     try:
-                        current = int(digits[:idx])
+                        current = self._strip_false_one(int(digits[:idx]))
                         if 0 < current <= locked * 1.5:
                             return HPResult(current=current, max_hp=locked,
                                            raw=raw, confidence="medium")
@@ -214,6 +239,8 @@ class HPParser:
                 a, b = int(a_str), int(b_str)
             except ValueError:
                 continue
+            # 去除误读的前导 1 / Strip false leading 1
+            a, b = self._strip_false_one(a), self._strip_false_one(b)
             if a <= b and a > 0 and b > 0:
                 len_diff = abs(len(a_str) - len(b_str))
                 candidates.append((-len_diff, a, b))
@@ -322,27 +349,26 @@ class HPParser:
 if __name__ == "__main__":
     print("=== 锁定 max 抗扰动测试 ===\n")
 
-    # 模拟: max=350 已锁定，中间混入 1350/450 等误读
-    # Simulate: max=350 already locked, with misreads like 1350/450 mixed in
+    # 模拟: max=250 已锁定，中间混入 1250/350 等误读
+    # Simulate: max=250 already locked, with misreads like 1250/350 mixed in
     parser = HPParser(confirm_frames=5)
     frames = [
-        ("350/350", 350, 350),     # 首次，锁定 max=350
-        ("350|350", 350, 350),
-        ("307/350", 307, 350),
-        ("3071350", 307, 350),     # max 误读为 1350 → 被锁定值修正
-        ("307|350", 307, 350),
-        ("307 350", 307, 350),
-        ("307/1350", 307, 350),    # max 误读 → 被修正
-        ("312/450", 312, 350),     # max=450 high → 开始候选，计数1
-        ("312/450", 312, 350),     # 计数2
-        ("312/350", 312, 350),     # 回到350，候选重置
-        ("312/450", 312, 350),     # 计数1（重新开始）
-        ("312/450", 312, 350),     # 计数2
-        ("312/450", 312, 350),     # 计数3
-        ("312/450", 312, 350),     # 计数4
-        ("312/450", 312, 350),     # 计数5 → 确认 max=450
-        ("280/450", 280, 450),     # 新锁定 max=450 生效
-        ("280/1350", 280, 450),    # 误读被新锁定修正
+        ("250/250", 250, 250),     # 首次，锁定 max=250
+        ("200/250", 200, 250),
+        ("2001250", 200, 250),     # max 误读为 1250 → _strip_false_one 还原为 250
+        ("200|250", 200, 250),
+        ("200 250", 200, 250),
+        ("200/1250", 200, 250),    # max 误读 1250 → 还原为 250
+        ("150/350", 150, 250),     # max=350 medium → 候选不计 (需 high 才计)
+        ("150/350", 150, 250),
+        ("150/250", 150, 250),
+        ("150/350", 150, 250),
+        ("150/350", 150, 250),
+        ("150/350", 150, 250),
+        ("150/350", 150, 250),
+        ("150/350", 150, 250),
+        ("120/250", 120, 250),     # 锁定仍是 250 (350 从未被 high 确认)
+        ("120/1250", 120, 250),    # 误读还原
     ]
     for text, exp_cur, exp_max in frames:
         result = parser.parse([text])

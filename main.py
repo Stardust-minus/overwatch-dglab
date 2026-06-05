@@ -50,12 +50,6 @@ class HPEvent(Enum):
     UNCHANGED = "unchanged"  # 无变化 / No change
 
 
-# ── 安全限制 / Safety limit ─────────────────────────────────
-# set_strength 的绝对硬上限，代码中不可配置超过此值
-# Absolute hard cap for set_strength, cannot be exceeded in code
-HARD_STRENGTH_CAP = 30
-
-
 def load_config(path: str) -> dict:
     """加载 YAML 配置文件，返回配置字典。"""
     """Load YAML config file and return config dict."""
@@ -101,10 +95,11 @@ class BloodPulseController:
         self.dg = dg_client
         self.channel = Channel.A if channel == "A" else Channel.B
 
-        # 安全: max_strength 不超过硬上限 // Safety: max_strength cannot exceed hard cap
-        self.max_strength = min(cfg.get("max_strength", HARD_STRENGTH_CAP), HARD_STRENGTH_CAP)
+        # 安全上限从配置文件读取 / Safety cap read from config file
+        self.max_strength = cfg.get("max_strength", 30)
 
-        # 事件参数 // Event parameters
+        # 事件参数 (默认值在 config/ow_blood_pulse.yaml 中定义)
+        # Event parameters (defaults defined in config/ow_blood_pulse.yaml)
         self.damage_threshold = cfg.get("damage_threshold", 1)
         self.low_hp_ratio = cfg.get("low_hp_ratio", 0.3)
         self.damage_cooldown = cfg.get("damage_cooldown", 0.8)
@@ -112,7 +107,7 @@ class BloodPulseController:
 
         # 强度映射 // Strength mapping
         self.strength_min = min(cfg.get("strength_min", 8), self.max_strength)
-        self.strength_max = min(cfg.get("strength_max", 30), self.max_strength)
+        self.strength_max = min(cfg.get("strength_max", self.max_strength), self.max_strength)
 
         # 仅死亡模式 // Death-only mode
         self.death_only = cfg.get("death_only", False)
@@ -129,7 +124,6 @@ class BloodPulseController:
         self.is_dead = False
         self.death_time: float = 0.0
         self.last_damage_time: float = 0.0
-        self._pulse_task: Optional[asyncio.Task] = None
 
         # 队列跟踪 // Queue tracking
         self._queue_entries: int = 0
@@ -206,10 +200,9 @@ class BloodPulseController:
             wave_data, repeat = build_wave(self.death_wave_name, self._cfg)
             wave_ms = len(wave_data) * repeat * 100
             print(f"\n  [DEATH] HP=0/{max_hp} -> 强度={strength}, {self.death_wave_name}({wave_ms}ms), {self.respawn_seconds:.0f}s内禁用")
-            await self._stop_pulse()
             await self._clear_queue()
             await self.dg.set_strength(self.channel, StrengthOperationType.SET_TO, strength)
-            self._pulse_task = asyncio.create_task(self._send_once(wave_data, repeat))
+            await self._send_once(wave_data, repeat)
 
         elif event == HPEvent.DAMAGED:
             # 仅死亡模式下跳过掉血波形 / Skip damage waveform in death-only mode
@@ -221,17 +214,15 @@ class BloodPulseController:
             wave_name = self.low_hp_wave_name if is_low else self.damage_wave_name
             wave_data, repeat = build_wave(wave_name, self._cfg)
             print(f"\n  [DAMAGE] HP={current}/{max_hp} ({ratio:.0%}) -> 强度={strength}, {wave_name}")
-            await self._stop_pulse()
             await self._clear_queue()
             await self.dg.set_strength(self.channel, StrengthOperationType.SET_TO, strength)
-            self._pulse_task = asyncio.create_task(self._send_once(wave_data, repeat))
+            await self._send_once(wave_data, repeat)
 
         elif event == HPEvent.HEALED:
             # 仅死亡模式下跳过回血处理 / Skip heal handling in death-only mode
             if self.death_only:
                 return
             print(f"\n  [HEAL] HP={current}/{max_hp} -> 停止波形")
-            await self._stop_pulse()
             await self._clear_queue()
 
         elif event == HPEvent.FULL:
@@ -239,7 +230,6 @@ class BloodPulseController:
             if self.death_only:
                 return
             print(f"\n  [FULL] HP={current}/{max_hp} -> 清空波形, 强度归零")
-            await self._stop_pulse()
             await self._clear_queue()
             try:
                 await self.dg.set_strength(self.channel, StrengthOperationType.SET_TO, 0)
@@ -272,17 +262,6 @@ class BloodPulseController:
             await self._add_with_tracking(entries)
         except Exception as e:
             print(f"  [波形发送失败] {e}")
-
-    async def _stop_pulse(self):
-        """停止正在发送的波形。"""
-        """Stop the currently sending waveform."""
-        if self._pulse_task and not self._pulse_task.done():
-            self._pulse_task.cancel()
-            try:
-                await self._pulse_task
-            except asyncio.CancelledError:
-                pass
-        self._pulse_task = None
 
 
 # ── MJPEG 接收器 / MJPEG receiver ──────────────────────────
@@ -332,7 +311,7 @@ async def main():
     parser.add_argument("--ws", default=None, help="郊狼 WS 地址 (覆盖配置文件)")
     parser.add_argument("--port", type=int, default=None, help="OBS UDP 端口 (覆盖配置文件)")
     parser.add_argument("--channel", default=None, choices=["A", "B"], help="输出通道 (覆盖配置文件)")
-    parser.add_argument("--max-strength", type=int, default=None, help=f"强度上限 (覆盖配置文件, 硬上限 {HARD_STRENGTH_CAP})")
+    parser.add_argument("--max-strength", type=int, default=None, help="强度上限 (覆盖配置文件)")
     parser.add_argument("--death-only", action="store_true", default=None, help="仅启用死亡波形, 忽略掉血/回血/满血")
     args = parser.parse_args()
 
@@ -486,7 +465,6 @@ async def main():
             receiver.close()
             try:
                 from pydglab_ws import StrengthOperationType
-                await controller._stop_pulse()
                 await client.clear_pulses(controller.channel)
                 await client.set_strength(controller.channel, StrengthOperationType.SET_TO, controller._clamp(0))
                 print("\n\n  [OK] 安全关闭: 波形清空, 强度归零")
